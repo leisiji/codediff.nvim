@@ -352,8 +352,10 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
     local directory = (view_mode == "tree") and "" or full_path:sub(1, -(#filename + 1))
 
     -- Calculate how much width we've used and reserve for status
+    local status_margin = config.options.explorer.status_right_margin or 1
     local used_width = vim.fn.strdisplaywidth(indent) + vim.fn.strdisplaywidth(icon_part)
-    local status_reserve = vim.fn.strdisplaywidth(status_symbol) + 3 -- 3-column right margin beyond the symbol
+    -- Reserve = symbol + 2 cells of minimum gap from content + configurable trailing margin
+    local status_reserve = vim.fn.strdisplaywidth(status_symbol) + 2 + status_margin
     local available_for_content = max_width - used_width - status_reserve
 
     -- Show: filename + full directory path, truncate directory from left if needed
@@ -394,11 +396,14 @@ function M.prepare_node(node, max_width, selected_path, selected_group)
       line:append(directory, get_hl("ExplorerDirectorySmall"))
     end
 
-    -- Add padding to right-align status symbol, leaving a small margin from the window edge
+    -- Right-align status symbol; trailing `status_margin` cells keep it visible against the window edge
     local content_len = vim.fn.strdisplaywidth(filename) + space_len + vim.fn.strdisplaywidth(directory)
-    local padding_needed = math.max(1, available_for_content - content_len)
+    local padding_needed = math.max(2, available_for_content - content_len + 2)
     line:append(string.rep(" ", padding_needed), get_hl("Normal"))
     line:append(status_symbol, get_hl(data.status_color))
+    if status_margin > 0 then
+      line:append(string.rep(" ", status_margin), get_hl("Normal"))
+    end
   end
 
   return line
