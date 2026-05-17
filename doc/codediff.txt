@@ -198,8 +198,10 @@ Setup entry point:
     },
     explorer = {
       position = "left",
+      hidden = false,
       width = 40,
       height = 15,
+      auto_refresh = true,
       indent_markers = true,
       icons = {
         folder_closed = "",
@@ -210,6 +212,7 @@ Setup entry point:
       file_filter = {
         ignore = { ".git/**", ".jj/**" },
       },
+      status_right_margin = 1,
       visible_groups = {
         staged = true,
         unstaged = true,
