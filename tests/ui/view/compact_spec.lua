@@ -51,6 +51,10 @@ end
 
 describe("compact mode (#344)", function()
   before_each(function()
+    -- M.setup merges on top of M.options (not defaults), so we have to
+    -- reset to defaults each test to undo state from prior tests.
+    local config = require("codediff.config")
+    config.options = vim.deepcopy(config.defaults)
     require("codediff").setup({
       diff = { layout = "side-by-side", compact_context_lines = 3 },
     })
@@ -60,6 +64,16 @@ describe("compact mode (#344)", function()
   after_each(function()
     while vim.fn.tabpagenr("$") > 1 do
       vim.cmd("tabclose")
+    end
+    -- The two scratch buffers backing create_session persist across tests
+    -- because their on-disk paths are the same; delete them so each test
+    -- starts with a fresh keymap state.
+    for _, name in ipairs({ "compact_spec_left.txt", "compact_spec_right.txt" }) do
+      local path = get_temp_path(name)
+      local bufnr = vim.fn.bufnr(path)
+      if bufnr ~= -1 and vim.api.nvim_buf_is_valid(bufnr) then
+        pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+      end
     end
   end)
 
@@ -263,6 +277,202 @@ describe("compact mode (#344)", function()
         "sanity: identical files should produce zero changes")
       assert.is_false(compact.enable(tabpage))
       assert.is_not.equal(true, session.compact_mode)
+    end)
+  end)
+
+  -- =====================================================================
+  -- synced folds (#171)
+  -- =====================================================================
+
+  describe("compute_corresponding_lnum", function()
+    local function make_change(o_start, o_end, m_start, m_end)
+      return {
+        original = { start_line = o_start, end_line = o_end },
+        modified = { start_line = m_start, end_line = m_end },
+      }
+    end
+
+    it("identity when from_side == to_side", function()
+      assert.equal(7, compact.compute_corresponding_lnum({}, "original", "original", 7))
+    end)
+
+    it("returns same line when no changes (perfect identity)", function()
+      assert.equal(42, compact.compute_corresponding_lnum({}, "original", "modified", 42))
+    end)
+
+    it("returns same line when before the first change", function()
+      local changes = { make_change(10, 12, 10, 15) }
+      assert.equal(5, compact.compute_corresponding_lnum(changes, "original", "modified", 5))
+    end)
+
+    it("applies cumulative delta after a change", function()
+      -- A 2-line region (original 10-11) was replaced by 5 lines (modified 10-14).
+      -- Delta past the change: +3. Original line 20 -> modified line 23.
+      local changes = { make_change(10, 12, 10, 15) }
+      assert.equal(23, compact.compute_corresponding_lnum(changes, "original", "modified", 20))
+    end)
+
+    it("applies negative delta when the modified side is shorter", function()
+      -- 5-line region (original 10-14) collapses to 2 lines (modified 10-11). Delta -3.
+      local changes = { make_change(10, 15, 10, 12) }
+      assert.equal(17, compact.compute_corresponding_lnum(changes, "original", "modified", 20))
+    end)
+
+    it("accumulates delta across multiple changes", function()
+      local changes = {
+        make_change(5, 6, 5, 7),    -- +1
+        make_change(15, 16, 16, 19), -- +2 more -> cumulative +3
+      }
+      assert.equal(53, compact.compute_corresponding_lnum(changes, "original", "modified", 50))
+    end)
+
+    it("maps a line inside a change to the corresponding sub-line on the other side", function()
+      -- 4-line original 10-13 maps to 4-line modified 10-13. Middle line maps proportionally.
+      local changes = { make_change(10, 14, 10, 14) }
+      -- Line 11 (offset 1 of 4) -> 10 + floor(1*4/4) = 11
+      assert.equal(11, compact.compute_corresponding_lnum(changes, "original", "modified", 11))
+    end)
+
+    it("maps a line inside a pure insertion (zero-width source) to the insertion start", function()
+      -- Pure insertion at base line 10: original [10,10) -> modified [10,13). Source query
+      -- has nothing to map, but if a caller asks about line 10 we return modified.start_line.
+      local changes = { make_change(10, 10, 10, 13) }
+      -- Line 10 is past from.start_line (10) but also past from.end_line (10), so
+      -- treated as past-the-change: delta = (13-10) = +3, mapped to 13.
+      assert.equal(13, compact.compute_corresponding_lnum(changes, "original", "modified", 10))
+    end)
+
+    it("works in the reverse direction (modified -> original)", function()
+      local changes = { make_change(10, 12, 10, 15) }
+      -- Modified 23 -> original 20 (inverse of the previous +3 delta case)
+      assert.equal(20, compact.compute_corresponding_lnum(changes, "modified", "original", 23))
+    end)
+  end)
+
+  describe("synced folds integration", function()
+    local function counts_with_changes()
+      local original, modified = {}, {}
+      for i = 1, 40 do
+        original[i] = "L" .. i
+        modified[i] = "L" .. i
+      end
+      -- A few isolated changes at lines 10 and 25.
+      modified[10] = "L10 CHANGED"
+      modified[25] = "L25 CHANGED"
+      return original, modified
+    end
+
+    it("installs synced-fold keymaps on both panes when enabled", function()
+      local tabpage, session = create_session(counts_with_changes())
+      assert.is_true(compact.enable(tabpage))
+
+      for _, buf in ipairs({ session.original_bufnr, session.modified_bufnr }) do
+        local maps = vim.api.nvim_buf_get_keymap(buf, "n")
+        local found_zo, found_zc = false, false
+        for _, m in ipairs(maps) do
+          if m.lhs == "zo" and (m.desc or ""):find("synced fold") then found_zo = true end
+          if m.lhs == "zc" and (m.desc or ""):find("synced fold") then found_zc = true end
+        end
+        assert.is_true(found_zo, "buffer should have synced 'zo' keymap")
+        assert.is_true(found_zc, "buffer should have synced 'zc' keymap")
+      end
+    end)
+
+    it("does NOT install synced-fold keymaps when compact_sync_folds = false", function()
+      require("codediff").setup({
+        diff = { layout = "side-by-side", compact_context_lines = 3, compact_sync_folds = false },
+      })
+
+      local tabpage, session = create_session(counts_with_changes())
+      assert.is_true(compact.enable(tabpage))
+
+      for _, buf in ipairs({ session.original_bufnr, session.modified_bufnr }) do
+        local maps = vim.api.nvim_buf_get_keymap(buf, "n")
+        for _, m in ipairs(maps) do
+          assert.is_nil(((m.desc or ""):find("codediff: synced fold")),
+            "no synced-fold keymap should be installed when option is false")
+        end
+      end
+    end)
+
+    it("removes synced-fold keymaps on disable", function()
+      local tabpage, session = create_session(counts_with_changes())
+      assert.is_true(compact.enable(tabpage))
+      assert.is_true(compact.disable(tabpage))
+
+      for _, buf in ipairs({ session.original_bufnr, session.modified_bufnr }) do
+        if vim.api.nvim_buf_is_valid(buf) then
+          local maps = vim.api.nvim_buf_get_keymap(buf, "n")
+          for _, m in ipairs(maps) do
+            assert.is_nil((m.desc or ""):find("codediff: synced fold"),
+              "synced-fold keymap should be gone after disable")
+          end
+        end
+      end
+    end)
+
+    it("does NOT install synced-fold keymaps in inline layout (single pane)", function()
+      require("codediff").setup({
+        diff = { layout = "inline", compact_context_lines = 3 },
+      })
+
+      local original, modified = counts_with_changes()
+      local tabpage, session = create_session(original, modified)
+      -- In inline mode there's just one pane; "synced" has no meaning.
+      assert.is_true(compact.enable(tabpage))
+
+      local buf = session.modified_bufnr
+      if buf and vim.api.nvim_buf_is_valid(buf) then
+        local maps = vim.api.nvim_buf_get_keymap(buf, "n")
+        for _, m in ipairs(maps) do
+          assert.is_nil((m.desc or ""):find("codediff: synced fold"),
+            "no synced-fold keymap in inline mode")
+        end
+      end
+    end)
+
+    it("pressing zc on one pane folds the corresponding region on the partner pane", function()
+      local tabpage, session = create_session(counts_with_changes())
+      assert.is_true(compact.enable(tabpage))
+
+      -- Sanity: keymap is installed (otherwise sync can't fire).
+      local found = false
+      for _, m in ipairs(vim.api.nvim_buf_get_keymap(session.original_bufnr, "n")) do
+        if m.lhs == "zc" and (m.desc or ""):find("synced fold") then found = true end
+      end
+      assert.is_true(found, "synced-fold zc keymap must be installed on original pane")
+
+      -- Open all folds first so both panes start fully expanded; then we
+      -- close at line 20 (unchanged region) on the original pane.
+      vim.api.nvim_set_current_win(session.original_win)
+      vim.cmd("normal! zR")
+      vim.api.nvim_set_current_win(session.modified_win)
+      vim.cmd("normal! zR")
+
+      -- Both panes should currently show line 20 as not in a closed fold.
+      local orig_before = vim.fn.foldclosed(20)
+      assert.equal(-1, orig_before)
+
+      -- Move cursor on original pane to line 20 and press zc (close fold).
+      vim.api.nvim_set_current_win(session.original_win)
+      vim.api.nvim_win_set_cursor(session.original_win, { 20, 0 })
+      vim.api.nvim_feedkeys("zc", "tx", false)
+
+      -- After the wrapped zc fires:
+      --   * original pane: line 20 should be inside a closed fold
+      --   * modified pane: corresponding line should also be inside a closed fold
+      local orig_after = vim.fn.foldclosed(20)
+      local mod_target = compact.compute_corresponding_lnum(
+        session.stored_diff_result.changes, "original", "modified", 20
+      )
+      local mod_after = vim.api.nvim_win_call(session.modified_win, function()
+        return vim.fn.foldclosed(mod_target)
+      end)
+
+      assert.is_true(orig_after > 0,
+        "original pane: line 20 should be inside a closed fold after zc, got foldclosed=" .. orig_after)
+      assert.is_true(mod_after > 0,
+        "modified pane: corresponding line " .. mod_target .. " should also be inside a closed fold (synced), got " .. mod_after)
     end)
   end)
 end)
