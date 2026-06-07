@@ -101,6 +101,7 @@ https://github.com/user-attachments/assets/64c41f01-dffe-4318-bce4-16eec8de356e
       highlight_priority = 100,           -- Priority for line-level diff highlights (increase to override LSP highlights)
       compute_moves = false,              -- Detect moved code blocks (opt-in, matches VSCode experimental.showMoves)
       compact_context_lines = 3,          -- Number of context lines around hunks in compact mode
+      compact_sync_folds = true,          -- Sync fold open/close across panes (mirrors Vim diff mode behavior)
     },
 
     -- Explorer panel configuration

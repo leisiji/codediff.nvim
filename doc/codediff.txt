@@ -196,6 +196,7 @@ Setup entry point:
       highlight_priority = 100,
       compute_moves = false,
       compact_context_lines = 3,
+      compact_sync_folds = true,
     },
     explorer = {
       position = "left",
