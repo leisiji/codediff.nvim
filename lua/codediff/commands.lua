@@ -91,6 +91,7 @@ local function handle_git_diff(revision, revision2, global_opts)
             end)
           end)
         else
+          local abs_path = vim.fn.fnamemodify(current_file, ":p")
           -- Compare revision vs working tree
           vim.schedule(function()
             ---@type SessionConfig
@@ -98,7 +99,7 @@ local function handle_git_diff(revision, revision2, global_opts)
               mode = "standalone",
               git_root = git_root,
               original_path = original_path,
-              modified_path = relative_path,
+              modified_path = abs_path,
               original_revision = commit_hash,
               modified_revision = "WORKING",
               layout = global_opts.layout,
